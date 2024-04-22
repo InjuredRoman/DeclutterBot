@@ -5,6 +5,8 @@ from frankapy import FrankaArm
 import time
 import rospy
 from geometry_msgs.msg import PoseArray,Pose
+from sensor_msgs.msg import PointCloud2, Image
+from cv_bridge import CvBridge
 import numpy as np
 import random
 from vision_msgs.msg import Detection2DArray
@@ -46,10 +48,23 @@ class YSSR:
         # rospy.Subscriber("/yolov7/detection",Detection2DArray,self.get_camera_frame_object)
         self.listener = tf.TransformListener()
         # rospy.Subscriber('/tf', TransformStamped, self.tf_callback)
+        rospy.Subscriber('/camera/depth/image_rect_raw', Image, self.depth_captured_cb)
+        rospy.Subscriber('/camera/color/image_raw', Image, self.image_captured_cb)
+
+        self.depths_captured = list()
+        self.images_captured = list()
         #utils
         self.z_threshold = 0.5
         self.kit_management = {'bin0':None, 'bin1':None}
         self.main()
+
+    def depth_captured_cb(self,data):
+        cvImage = self.cvbridge.imgmsg_to_cv2(data)
+        self.depths_captured.append(cvImage)
+    
+    def image_captured_cb(self, data):
+        cvImage = self.cvbridge.imgmsg_to_cv2(data)
+        self.images_captured.append(cvImage)
 
     def tf_callback(self,data):
         trans, rot = self.listener.lookupTransform('/base_link', '/camera_link', rospy.Time(0))
