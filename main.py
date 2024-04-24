@@ -6,6 +6,7 @@ import time
 import rospy
 from geometry_msgs.msg import PoseArray,Pose
 from sensor_msgs.msg import PointCloud2, Image
+import sensor_msgs.point_cloud2 as pc2
 from cv_bridge import CvBridge
 import numpy as np
 import random
@@ -15,9 +16,37 @@ import tf2_ros
 from geometry_msgs.msg import PoseStamped, Vector3Stamped
 from geometry_msgs.msg import TransformStamped
 from tf.transformations import quaternion_matrix
-from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import CameraInfo, PointCloud2
+import struct
+import ctypes
 
-
+import open3d as o3d
+def pctonp(pc):
+    print('a')
+    # from [here](https://answers.ros.org/question/344096/subscribe-pointcloud-and-convert-it-to-numpy-in-python/)
+    xyz = np.array([[0,0,0]])
+    rgb = np.array([[0,0,0]])
+    print('a')
+    gen = pc2.read_points(pc, skip_nans=True)
+    print('a')
+    int_data = list(gen)
+    print('yo')
+    for x in int_data:
+        test = x[3] 
+        # cast float32 to int so that bitwise operations are possible
+        s = struct.pack('>f' ,test)
+        i = struct.unpack('>l',s)[0]
+        # you can get back the float value by the inverse operations
+        pack = ctypes.c_uint32(i).value
+        r = (pack & 0x00FF0000)>> 16
+        g = (pack & 0x0000FF00)>> 8
+        b = (pack & 0x000000FF)
+        # prints r,g,b values in the 0-255 range
+                    # x,y,z can be retrieved from the x[0],x[1],x[2]
+        xyz = np.append(xyz,[[x[0],x[1],x[2]]], axis = 0)
+        rgb = np.append(rgb,[[r,g,b]], axis = 0)
+    print('a')
+    return xyz, rgb
 ##flow of the project
 #starts from the home position
 #detects the object using sam and segment them
@@ -32,13 +61,18 @@ from sensor_msgs.msg import CameraInfo
 #repeat till condition  
 #go to the home pose 
 
-
+import ros_numpy.point_cloud2 as nppc2
 home = [ 1.96596364e-04, -7.85841667e-01, -3.06014654e-03, -2.35654641e+00, -4.62090277e-04,  1.57150903e+00,  7.85095747e-01]
 
 class YSSR:
     def __init__(self):
         #initialise arm
         self.franka = FrankaArm()
+        self.franka.stop_skill()
+        self.franka.reset_joints()
+        self.cvb = CvBridge()
+        
+
         # self.franka.reset_joints()
         # self.franka.open_gripper()
         # self.franka.goto_joints(home)
@@ -65,6 +99,8 @@ class YSSR:
         # rospy.Subscriber("/yolov7/detection",Detection2DArray,self.get_camera_frame_object)
         self.listener = tf.TransformListener()
         # rospy.Subscriber('/tf', TransformStamped, self.tf_callback)
+        self.depth_captures = []
+        # '/camera/depth/color/points'
         # rospy.Subscriber('/camera/depth/image_rect_raw', Image, self.depth_captured_cb)
         # rospy.Subscriber('/camera/color/image_raw', Image, self.image_captured_cb)
         # rospy.Subscriber('/camera/color/camera_info',CameraInfo,self.camera_info_cb)
@@ -75,8 +111,48 @@ class YSSR:
         # self.tf_buffer = tf2_ros.Buffer()
         # self.listener = tf2_ros.TransformListener(self.tf_buffer)
         self.kit_management = {'bin0':[], 'bin1':[]}
+        self.yoloIdsToNames = {
+            0: 'eraser',
+            1: 'marker',
+            2: 'cube',
+            3: 'cylinder'
+        }
+        self.namesToBins= {
+            'eraser': 0,
+            'marker': 1,
+            'cube': 2,
+            'cylinder': 3
+        }
+        self.binPoses = {
+            0: [0.3, 0.3, 0.3],
+            1: [0.6, 0.3, 0.3],
+            2: [0.3, -0.3, 0.3],
+            3: [0.6, -0.3, 0.3]
+        }
         self.main()
+    def makePoseFromPosArr(self, poseArray):
+        x, y, z = poseArray
+        res = PoseStamped()
+        res.pose.position.x = x
+        res.pose.position.y = y
+        res.pose.position.z = z
+        return res
+    
 
+    
+    def depth_captured_cb(self, pc):
+        print(type(pc))
+        rgb, depth = pctonp(pc)
+        print(rgb.shape)
+        # print(rgb.shape)
+        print(depth.shape)
+        # x = np.asarray(self.cvb.pointcloud2_to_cv2(pc))
+        # print(x.shape)
+        # print(depth.shape)
+        # img = np.asarray(self.cvb.imgmsg_to_cv2(pc, desired_encoding='passthrough'))
+        # print(pc.height, pc.width, pc.step, pc.encoding)
+        # print(img.shape)
+        # self.depth_captures.append(pc)
     def camera_info_cb(self,msg):
         self.K = msg.K
     
@@ -114,7 +190,7 @@ class YSSR:
 
 
 
-    def create_pose_msg(self, x, y, angle, z=0.5):
+    def create_pose_msg(self, x, y, angle, z=0.57):
         pose_msg = PoseStamped()
         # pose_msg.header.frame_id = "camera_color_frame"
 
@@ -164,17 +240,6 @@ class YSSR:
             return None
         
 
-
-
-        try:
-            transform_timeout = rospy.Duration(1.0)
-            robot_frame = "panda_link0"
-            pose_transformed = self.tf_buffer.transform(pose_msg, robot_frame, timeout=transform_timeout)
-            return pose_transformed
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
-            rospy.logerr("TF2 transform error: %s" % ex)
-            return None
-
         
     def get_camera_frame_object(self,bbox):
         
@@ -204,7 +269,7 @@ class YSSR:
         
         world_frame = tf_matrix@ camera_pose
         world_frame /= world_frame[3]
-        print(world_frame)
+        # print(world_frame)
 
         return world_frame[:,:3]
 
@@ -223,30 +288,60 @@ class YSSR:
         extrated_pose = [pose.pose.position.x, pose.pose.position.y, pose.pose.position.z]
 
         p0 = self.franka.get_pose()
-        print("Get pose", p0)
+        # print("Get pose", p0)
         p0.position = np.array(extrated_pose)
     
         return p0
-
+    
+    def goToBin(self, bin):
+        binPose = self.binPoses[bin]
+        self.franka.goto_pose(self.transformPose(self.makePoseFromPosArr(binPose)))
 
     def main(self):
+        # for k, v in self.binPoses.items():
+        #     print('going to bin %i' % k)
+        #     self.franka.goto_pose(self.transformPose(self.makePoseFromPosArr(v)))
+        # exit()
         while True:
             print('hello')
+
+            depthTopic = '/camera/depth/color/points' #sensor_msgs/PointCloud2
+
+            # got to a view where we see more of the table, avoid artifacts from base of franka arm (offtable)
+            scanningPose = self.franka.get_pose()
+            scanningPose.position[0] += .18; scanningPose.position[2] += .05
+            self.franka.goto_pose(scanningPose)
+
             object_poses = rospy.wait_for_message("/yolov7/detection", Detection2DArray,timeout=5)
-            
+            depthScan = rospy.wait_for_message('/camera/depth/color/points', PointCloud2, timeout=5)
+            # res = pc2.read_points(depthScan)
+            # res = pc2.pointcloud2_to_array(depthScan)
+            res = nppc2.pointcloud2_to_xyz_array(depthScan)
+            print(res.shape)
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(res)
+            ## PCD looks like it might be our ticket
+            #o3d.visualization.draw_geometries([pcd])
+            # ?rospy.Subscriber('/camera/depth/color/points', PointCloud2, self.depth_captured_cb, queue_size=1, buff_size=52428800)
+
             world_frame_boxes, object = self.get_camera_frame_object(object_poses)
             
+            exit()
             
             # new_pose = [world_frame_boxes[0][0],world_frame_boxes[1][0], 0.0]
 
             # print(new_pose)
             # new_pose = np.array([0.175,0.0453, 0.0])
             # new_pose = np.array([0.0,0.0, 0.0])
+            
+            
             new_pose = self.transformPose(world_frame_boxes)
             print("[INFO] Successfully transformed the pose and exiting")
-            
+            # print("New pose", new_pose)
+            new_pose.position[2] = 0.3
             self.franka.goto_pose(new_pose)
            
+
             # exit()
             #run point cloud search to find the gripping point
             # gripper_point = PointCloudSearch()
@@ -258,6 +353,9 @@ class YSSR:
             self.franka.goto_joints(home)
             
             selected_bin = self.get_bin(object)
+
+            for keys, values in self.kit_management.items():
+                print(keys, values)
 
             if (selected_bin == 'bin0'):
                 bin = self.transformPose(self.bin0_pose)
